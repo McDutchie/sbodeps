@@ -61,7 +61,7 @@ appears_in() {
 }
 
 # Returns successfully if a Slackware package $1 is installed for the
-# architecture $ARCH or 'noarch', unsuccessfully if not.
+# architecture $arch or 'noarch', unsuccessfully if not.
 is_installed() {
     test -f /var/log/packages/$1-*-$arch-[0-9]* \
     || test -f /var/log/packages/$1-*-noarch-[0-9]*
@@ -157,7 +157,8 @@ if [[ -r ~/.sbopkg.conf ]]; then
     source ~/.sbopkg.conf || die ~/.sbopkg.conf 'corrupted'
 fi
 # for is_installed()
-arch=${ARCH:-$(uname -m)}; case $arch in ( i?86 ) arch='i?86' ;; esac
+arch=${ARCH:-$(uname -m)}
+[[ $arch == i?86 ]] && arch='i?86'
 # for resolve_deps()
 repobase=$REPO_ROOT/$REPO_NAME/$REPO_BRANCH
 buildq=''
