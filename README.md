@@ -16,7 +16,7 @@ When you're trying to install something like SpamAssassin and its 41 multi-layer
 * Unlike `sqg`, `sbodeps` skips dependencies that are already installed. Use the `-a` option to include them.
 * To install one or more packages and their dependencies, `sbodeps` does not need a stored build queue at all; instead, it will directly construct a command line for `sbopkg` that installs, in the correct order, the specified packages and all their dependencies that aren't already installed. (If `-a` is given, it will rebuild and reinstall even the already-installed ones.) Installing SpamAssassin and its 41 dependencies is as simple as saying `sbodeps -i spamassassin`.
 * To remove a package and its installed slackbuilds.org dependencies, use the `-r` option. Caution is advised; `sbodeps` will build and show a `removepkg` command and ask for confirmation before executing it.
-* Shows a pointer to the package's README file if it has are optional dependencies (meaning, if there is a `%README%` tag in the .info file).
+* Shows a pointer to the package's README file if it has optional dependencies (meaning, if there is a `%README%` tag in the .info file).
 * Does not require root just to show or store a build queue.
 * Respectful towards the [Slackware philosophy](http://docs.slackware.com/slackware:philosophy): it does not take any control away from the administrator, shows exactly what it will do before doing it, and changes nothing without express prior permission.
 * Shamelessly heretical towards the Slackware philosophy: it might tempt someone to admit that automated dependency resolution can be awfully convenient. ;-)
