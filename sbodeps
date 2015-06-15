@@ -92,7 +92,7 @@ EOF
 }
 
 showlicense() {
-    sed -n 's/^# //; /\-\-\- begin license/,/\-\-\- end license/p' "$0"
+    sed -nE 's/^# ?//; /\-\-\- begin license/,/\-\-\- end license/p' "$0"
 }
 
 
