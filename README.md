@@ -11,9 +11,9 @@ When you're trying to install something like SpamAssassin and its 41 multi-layer
 
 ## Features
 
-* Much more convenient to use than `/usr/doc/sbopkg-0.37.0/contrib/sqg` and roughly 100 times as fast.
+* Fast, on-the-fly dependency resolution. Unlike with `/usr/doc/sbopkg-0.37.0/contrib/sqg`, there is no need to store build queues in advance, although you can do.
 * Given no options, `sbodeps` simply outputs the build queue for the specified package(s) to the terminal. Use output redirection or the `-q` option to store it wherever you want. Use the `-Q` option to store it in `sbopkg`'s queues directory like `sqg` does, so you can use it with `sbopkg`'s dialog interface.
-* Unlike `sqg`, `sbodeps` skips dependencies that are already installed by default. Use the `-a` option to include already-installed dependencies.
+* Unlike `sqg`, `sbodeps` skips dependencies that are already installed. Use the `-a` option to include them.
 * To install one or more packages and their dependencies, `sbodeps` does not need a stored build queue at all; instead, it will directly construct a command line for `sbopkg` that installs, in the correct order, the specified packages and all their dependencies that aren't already installed. (If `-a` is given, it will rebuild and reinstall even the already-installed ones.) Installing SpamAssassin and its 41 dependencies is as simple as saying `sbodeps -i spamassassin`.
 * To remove a package and its installed slackbuilds.org dependencies, use the `-r` option. Caution is advised; `sbodeps` will build and show a `removepkg` command and ask for confirmation before executing it.
 * Shows a pointer to the package's README file if it has are optional dependencies (meaning, if there is a `%README%` tag in the .info file).
