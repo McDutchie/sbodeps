@@ -21,6 +21,12 @@ When you're trying to install something like SpamAssassin and its 41 multi-layer
 * Respectful towards the [Slackware philosophy](http://docs.slackware.com/slackware:philosophy): it does not take any control away from the administrator, shows exactly what it will do before doing it, and changes nothing without express prior permission.
 * Shamelessly heretical towards the Slackware philosophy: it might tempt someone to admit that automated dependency resolution can be awfully convenient. ;-)
 
+## Security considerations
+
+As part of its strategy to achieve high performance, `sbodeps` directly sources `sbopkg` configuration files and `.info` files from the repository, treating the configuration entries as shell variables. These files should only contain variable assignments and comments. However, any other shell code found there would also be executed by `bash`, even `rm -rf /`. So, before you use `sbodeps`, make sure you trust that your configuration files and your local copy of the `sbopkg` repository have not been tampered with.
+
+(To be fair, the same applies to running `sbopkg` itself, or indeed any SlackBuild script; they could just as easily contain malicious shell code.)
+
 ## Usage and options
 
     Usage: sbodeps [OPTION...] [PACKAGENAME...]
