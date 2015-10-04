@@ -23,6 +23,9 @@
 # --- end license ---
 #
 # Version history:
+# 2015-10-02: 1.0.1:
+# - better use of bash features, incl. shell arith for option checking
+# - bugfix in check for contradictory options: -Q was not considered
 # 2015-06-14: 1.0:
 # - recoded for bash; coding style of sbopkg adopted
 # - relicensed with same license as sbopkg
@@ -33,25 +36,25 @@
 # - error if no packages given
 # 2014-03-21: 0.2: initial release.
 
-version='1.0 [14 Jun 2015]'
+version='1.0.1 [02 Oct 2015]'
 
 
 # --- utility functions ---
 
 # Exit gracefully on error. Usage: die [ -u ] <exitstatus> [ <message> ]
-die() {
-    local opt_usage
-    [[ $1 == '-u' ]] && opt_usage=y && shift
+function die {
+    local opt_usage=0 exitstatus
+    [[ $1 == '-u' ]] && opt_usage=1 && shift
     exitstatus=$1
     shift
-    [[ -n $* ]] && echo "$self: $*" 1>&2
-    [[ -n $opt_usage ]] && echo "Type $self --help for help." 1>&2
+    (($#)) && echo "$self: $*" 1>&2
+    ((opt_usage)) && echo "Type $self --help for help." 1>&2
     exit $exitstatus
 }
 
 # Returns successfully if a query string $1 is equal to at least one of the
 # rest of the arguments, unsuccessfully if not.
-appears_in() {
+function appears_in {
     local query=$1 word
     shift
     for word do
@@ -62,7 +65,7 @@ appears_in() {
 
 # Returns successfully if a Slackware package $1 is installed for the
 # architecture $arch or 'noarch', unsuccessfully if not.
-is_installed() {
+function is_installed {
     test -f /var/log/packages/$1-*-$arch-[0-9]* \
     || test -f /var/log/packages/$1-*-noarch-[0-9]*
 }
@@ -70,11 +73,11 @@ is_installed() {
 
 # --- UI functions ---
 
-showversion() {
+function showversion {
     echo "sbodeps version $version"
 }
 
-showhelp() {
+function showhelp {
 cat <<EOF
 Usage: $self [OPTION...] [PACKAGENAME...]
 Generate a sbopkg build queue for a package, resolving dependencies.
@@ -91,7 +94,7 @@ Options:
 EOF
 }
 
-showlicense() {
+function showlicense {
     sed -nE 's/^# ?//; /\-\-\- begin license/,/\-\-\- end license/p' "$0"
 }
 
@@ -100,7 +103,7 @@ showlicense() {
 
 # Recursively resolve dependencies of a given SBo package, adding them to
 # the space-separated global variable $buildq in build order.
-resolve_deps() {
+function resolve_deps {
     local PRGNAM REQUIRES   # sourced from .info files
     local dep        # recursive loop variable
 
@@ -109,12 +112,12 @@ resolve_deps() {
 
     source "$repobase"/*/"$1/$1.info"
 
-    [[ $PRGNAM == "$1" ]] || die 1 "$REPO_NAME repository corrupted!"
+    [[ $PRGNAM == "$1" ]] || die 3 "$REPO_NAME repository corrupted!"
 
     for dep in $REQUIRES; do
 
         if [[ $dep == '%README%' ]]; then
-            if [[ -z $opt_remove ]]; then
+            if ((!opt_remove)); then
                 printf '# See %s for optional dependencies.\n' \
                     $repobase/*/$PRGNAM/README
             fi
@@ -129,19 +132,19 @@ resolve_deps() {
         # perform recursion
         resolve_deps $dep
 
-        if [[ -z $opt_all && -z $opt_remove ]]; then
-            if is_installed $dep; then
-                continue
+        if ((!opt_all)); then
+            if ((!opt_remove)); then
+                if is_installed $dep; then
+                    continue
+                fi
+            else
+                if ! is_installed $dep; then
+                    continue
+                fi
             fi
         fi
-
-        if [[ -n $opt_remove && -z $opt_all ]]; then
-            if ! is_installed $dep; then
-                continue
-            fi
-        fi
-
-        buildq="$buildq $dep"
+            
+        buildq+=" $dep"
 
     done
 }
@@ -151,23 +154,22 @@ resolve_deps() {
 
 self=${0##*/}
 # source configuration variables from sbopkg configuration
-is_installed sbopkg || die 1 'Requires sbopkg.'
-source /etc/sbopkg/sbopkg.conf || die 'sbopkg.conf corrupted'
+is_installed sbopkg || die 3 'Requires sbopkg.'
+source /etc/sbopkg/sbopkg.conf || die 3 'sbopkg.conf corrupted'
 if [[ -r ~/.sbopkg.conf ]]; then
-    source ~/.sbopkg.conf || die ~/.sbopkg.conf 'corrupted'
+    source ~/.sbopkg.conf || die 3 ~/.sbopkg.conf 'corrupted'
 fi
-# for is_installed()
+# for function is_installed
 arch=${ARCH:-$(uname -m)}
 [[ $arch == i?86 ]] && arch='i?86'
-# for resolve_deps()
+# for function resolve_deps
 repobase=$REPO_ROOT/$REPO_NAME/$REPO_BRANCH
 buildq=''
 
 
 # --- parse options ---
 
-unset opt_all opt_install opt_remove opt_qfile opt_Q
-ckarg() { [[ -n $OPTARG ]] || die -u 2 "-$opt: option requires an argument"; }
+opt_all=0 opt_install=0 opt_remove=0 opt_q=0 qfile=''
 while getopts 'airq:QvhL-:' opt; do
     if [[ $opt == '-' ]]; then
         # support long options in forms --option and --option=argument
@@ -176,15 +178,16 @@ while getopts 'airq:QvhL-:' opt; do
     fi
     case "$opt" in
     ( a | -all )
-        opt_all=y ;;
+        opt_all=1 ;;
     ( i | -install )
-        opt_install=y ;;
+        opt_install=1 ;;
     ( r | -remove )
-        opt_remove=y ;;
+        opt_remove=1 ;;
     ( q | -qfile | -queuefile )
-        ckarg; opt_qfile=$OPTARG ;;
+        [[ -n $OPTARG ]] || die -u 2 "-$opt: option requires an argument"
+        opt_q=1; qfile=$OPTARG ;;
     ( Q | -queue )
-        opt_Q=y ;;
+        opt_q=1 ;;
     ( v | -version )
         showversion; exit ;;
     ( h | -help )
@@ -199,28 +202,25 @@ while getopts 'airq:QvhL-:' opt; do
 done
 shift $((OPTIND-1))
 
-
 # --- check options ---
 
-if [[ $# -eq 0 ]]; then
+if (($# == 0)); then
     die -u 2 'No package name given.'
 fi
 
-if [[ ( -n $opt_install && ( -n $opt_remove || -n $opt_qfile ) )
-    || ( -n $opt_remove && ( -n $opt_install || -n $opt_qfile ) )
-    || ( -n $opt_qfile && ( -n $opt_install || -n $opt_remove ) ) ]]
+if ((opt_install + opt_remove + opt_q > 1))
 then
     die -u 2 'Contradictory options specified.'
 fi
 
 # redirect standard output to queue file if requested
-if [[ -n $opt_Q ]]; then
-    opt_qfile=$QUEUEDIR/$*.sqf
-    opt_qfile=${opt_qfile// /+}
-fi
-if [[ -n $opt_qfile ]]; then
-    exec >"$opt_qfile" || die $? "Could not open queue file for writing."
-    echo "Storing queue file in: $opt_qfile" 1>&2
+if ((opt_q)); then
+    if [[ -z $qfile ]]; then
+        qfile=$QUEUEDIR/$*.sqf
+        qfile=${qfile// /+}
+    fi
+    exec >"$qfile" || die $? "Could not open queue file for writing."
+    echo "Storing queue file in: $qfile" 1>&2
 fi
 
 
@@ -231,7 +231,7 @@ for pkg in $*; do
     resolve_deps $pkg
 
     if ! appears_in $pkg $buildq; then
-        buildq="$buildq $pkg"
+        buildq+=" $pkg"
     fi
 
 done
@@ -239,11 +239,11 @@ done
 
 # --- process or output the results ---
 
-if [[ -n $opt_install ]]; then
+if ((opt_install)); then
     printf -v args -- '-i %s ' $buildq
     echo '+ sbopkg' $args
     exec sbopkg $args
-elif [[ -n $opt_remove ]]; then
+elif ((opt_remove)); then
     args=$(printf '%s\n' $buildq | tac)
     echo '+ removepkg' $args
     read -r -p 'Really remove all these packages? ' reply
