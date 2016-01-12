@@ -23,6 +23,13 @@
 # --- end license ---
 #
 # Version history:
+# 2016-01-12: 1.1:
+# - new '-c'/'--check' option, much faster than 'sbopkg -c'
+# - by default, don't consider installed non-repo packages in dep resolution
+# - new -n/--nonrepo option: consider installed non-repo packages in
+#   dependency resolution and/or update checking
+# - by default, write comments to standard error and only packages to
+#   standard output, so that sbodeps can be used in $(command substitution)
 # 2015-10-02: 1.0.1:
 # - better use of bash features, incl. shell arith for option checking
 # - bugfix in check for contradictory options: -Q was not considered
@@ -36,7 +43,7 @@
 # - error if no packages given
 # 2014-03-21: 0.2: initial release.
 
-version='1.0.1 [02 Oct 2015]'
+version='1.1 [12 Jan 2016]'
 
 
 # --- utility functions ---
@@ -54,20 +61,41 @@ function die {
 
 # Returns successfully if a query string $1 is equal to at least one of the
 # rest of the arguments, unsuccessfully if not.
+# Speed-optimized, but requires strings that do not contain slashes.
+# Not a problem for sbodeps: we're working with (parts of) filenames.
 function appears_in {
-    local query=$1 word
+    local query=$1 IFS=/  # set IFS for "$*"
     shift
-    for word do
-        [[ $word == "$query" ]] && return 0
-    done
-    return 1
+    case /$*/ in
+    ( */"$query"/* )
+        ;;
+    ( * )
+        false ;;
+    esac
 }
 
-# Returns successfully if a Slackware package $1 is installed for the
-# architecture $arch or 'noarch', unsuccessfully if not.
+# Returns successfully if any $REPO_NAME build of a Slackware package $1 is
+# installed, unsuccessfully if not.  If opt_nonrepo is non-zero, test for
+# any build at all. Depends on slash-separated variable $installed_packages.
+#
+# As a speed optimzation, store all the installed packages in a variable on
+# first use, instead doing repeated globbing on /var/log/packages.
+installed_packages=''
 function is_installed {
-    test -f /var/log/packages/$1-*-$arch-[0-9]* \
-    || test -f /var/log/packages/$1-*-noarch-[0-9]*
+    case $opt_nonrepo,${installed_packages:-doinit} in
+    ( 0,*/"$1"-*-*-[0-9]_"$REPO_NAME"/* )
+        ;;
+    ( 1,*/"$1"-*-*-[0-9]*/* )
+        ;;
+    ( ?,doinit )
+        # init on first use
+        local arg=$1 IFS=/  # set IFS for "$*"
+        set -- /var/log/packages/*-*-*-[0-9]*
+        installed_packages=/${*//'/var/log/packages/'/}/
+        is_installed "$arg" ;;
+    ( * )
+        false ;;
+    esac
 }
 
 
@@ -80,7 +108,8 @@ function showversion {
 function showhelp {
 cat <<EOF
 Usage: $self [OPTION...] [PACKAGENAME...]
-Generate a sbopkg build queue for a package, resolving dependencies.
+Generate a sbopkg build queue for one or more packages or check for possible
+updates to already-installed packages, resolving dependencies.
 Options:
   -a, --all         include all dependencies, even those already installed
   -Q, --queue       store build queue in $QUEUEDIR/PACKAGENAME.sqf
@@ -88,6 +117,8 @@ Options:
                     store build queue in FILE
   -i, --install     instead of storing build queue, install packages now
   -r, --remove      remove a package and its dependencies (be careful!)
+  -c, --check       add potential updates (and any new deps) to build queue
+  -n, --nonrepo     consider non-$REPO_NAME installed packages in dep.res./updates
   -v, --version     show version number
   -h, --help        show this help
   -L, --licen[sc]e  show license
@@ -104,13 +135,14 @@ function showlicense {
 # Recursively resolve dependencies of a given SBo package, adding them to
 # the space-separated global variable $buildq in build order.
 function resolve_deps {
-    local PRGNAM REQUIRES   # sourced from .info files
-    local dep        # recursive loop variable
+    local PRGNAM= REQUIRES=  # sourced from .info files
+    local dep                # recursive loop variable
 
-    test -f "$repobase"/*/"$1/$1.info" \
-    || die 1 "Package $1 not found in $REPO_NAME repo"
+    set -- "$1" "$repobase"/*/"$1/$1.info"
+    (($# > 2)) && die 3 "$REPO_NAME repository corrupted!"
+    [[ -f "$2" ]] || die 1 "Package $1 not found in $REPO_NAME/$REPO_BRANCH"
 
-    source "$repobase"/*/"$1/$1.info"
+    source "$2"
 
     [[ $PRGNAM == "$1" ]] || die 3 "$REPO_NAME repository corrupted!"
 
@@ -118,7 +150,7 @@ function resolve_deps {
 
         if [[ $dep == '%README%' ]]; then
             if ((!opt_remove)); then
-                printf '# See %s for optional dependencies.\n' \
+                printf 1>&3 '# See %s for optional dependencies.\n' \
                     $repobase/*/$PRGNAM/README
             fi
             continue
@@ -149,19 +181,87 @@ function resolve_deps {
     done
 }
 
+# Check against the repo for updates of installed SBo packages, adding potential
+# updates (and any non-installed dependencies) to the build queue.
+function check_for_updates {
+    local pkgfile scriptline \
+          curprgnam curversion curarch curbuild curtag \
+          PRGNAM VERSION BUILD
+
+    if ((opt_nonrepo)); then
+        set -- /var/log/packages/*
+    else
+        set -- /var/log/packages/*_"$REPO_NAME"
+        # unresolved glob: there are no SBo packages at all
+        [[ $#,$1 == "1,/var/log/packages/*_$REPO_NAME" ]] && return
+    fi
+
+    for pkgfile do
+
+        curtag=${pkgfile##*-}
+        curbuild=${curtag%%[!0-9]*}
+        curtag=${curtag#"$curbuild"}
+
+        curarch=${pkgfile%"-$curbuild$curtag"}
+        curarch=${curarch##*-}
+
+        curversion=${pkgfile%"-$curarch-$curbuild$curtag"}
+        curversion=${curversion##*-}
+
+        curprgnam=${pkgfile%"-$curversion-$curarch-$curbuild$curtag"}
+        curprgnam=${curprgnam#/var/log/packages/}
+
+        PRGNAM=
+        VERSION=
+        BUILD=
+
+        set -- $repobase/*/$curprgnam/$curprgnam.info
+        (($# > 1)) && die 3 "$REPO_NAME repository corrupted!"
+        [[ -f "$1" ]] || continue
+
+        # Get PRGNAM and VERSION from the .info file
+        source "$1"
+
+        # Unfortunately BUILD is not included in the .info file, so we have
+        # to glean it from the SlackBuild script
+        while read -r scriptline; do
+            if [[ $scriptline == BUILD=* ]]; then
+                eval "$scriptline"
+                break
+            fi
+        done < ${1%.info}.SlackBuild
+
+        if [[ $curprgnam != "$PRGNAM" || -z $VERSION || -z $BUILD ]]; then
+            die 3 "$REPO_NAME repository corrupted!"
+        fi
+
+        if [[ $curversion == "$VERSION" && $curbuild$curtag == "${BUILD}_$REPO_NAME" ]]; then
+            continue
+        fi
+
+        printf 1>&3 '# Available: %s %s (build %s) <> %s (build %s)\n' \
+            "$PRGNAM" "$curversion" "$curbuild$curtag" "$VERSION" "${BUILD}_$REPO_NAME"
+
+        resolve_deps "$PRGNAM"  # in case there are new dependencies
+
+        buildq+=" $PRGNAM"
+
+    done
+}
 
 # --- initialization ---
 
+set -o nounset
 self=${0##*/}
+exec 3>&2       # buildq comments go to stderr by default
+
 # source configuration variables from sbopkg configuration
-is_installed sbopkg || die 3 'Requires sbopkg.'
+[[ -x /usr/sbin/sbopkg && -r /etc/sbopkg/sbopkg.conf ]] || die 3 'Requires sbopkg.'
 source /etc/sbopkg/sbopkg.conf || die 3 'sbopkg.conf corrupted'
 if [[ -r ~/.sbopkg.conf ]]; then
     source ~/.sbopkg.conf || die 3 ~/.sbopkg.conf 'corrupted'
 fi
-# for function is_installed
-arch=${ARCH:-$(uname -m)}
-[[ $arch == i?86 ]] && arch='i?86'
+
 # for function resolve_deps
 repobase=$REPO_ROOT/$REPO_NAME/$REPO_BRANCH
 buildq=''
@@ -169,8 +269,8 @@ buildq=''
 
 # --- parse options ---
 
-opt_all=0 opt_install=0 opt_remove=0 opt_q=0 qfile=''
-while getopts 'airq:QvhL-:' opt; do
+opt_all=0 opt_install=0 opt_remove=0 opt_q=0 qfile='' opt_check=0 opt_nonrepo=0
+while getopts 'airq:QcnvhL-:' opt; do
     if [[ $opt == '-' ]]; then
         # support long options in forms --option and --option=argument
         opt=-${OPTARG%%=*}
@@ -188,6 +288,10 @@ while getopts 'airq:QvhL-:' opt; do
         opt_q=1; qfile=$OPTARG ;;
     ( Q | -queue )
         opt_q=1 ;;
+    ( c | -check )
+        opt_check=1 ;;
+    ( n | -nonrepo )
+        opt_nonrepo=1 ;;
     ( v | -version )
         showversion; exit ;;
     ( h | -help )
@@ -195,34 +299,44 @@ while getopts 'airq:QvhL-:' opt; do
     ( L | -licen[sc]e )
         showversion; showlicense; exit ;;
     ( '?' )
-        die -u 2 ;;    # error msg printed by getopts
-    ( * )
+        die -u 2 ;;    # error msg already printed by getopts
+    ( -* )
         die -u 2 "invalid option: -$opt" ;;
+    ( * )
+    	die 4 "option parsing: internal error" ;;
     esac
 done
 shift $((OPTIND-1))
 
+
 # --- check options ---
 
-if (($# == 0)); then
-    die -u 2 'No package name given.'
+if ((! $# && ! opt_check)); then
+    die -u 2 'No package name or -c given.'
 fi
 
-if ((opt_install + opt_remove + opt_q > 1))
+if ((opt_install + opt_remove + opt_q > 1 || opt_check + opt_remove > 1))
 then
     die -u 2 'Contradictory options specified.'
 fi
 
-# redirect standard output to queue file if requested
+# redirect standard output (1) and comments (3) to queue file if requested
 if ((opt_q)); then
     if [[ -z $qfile ]]; then
-        qfile=$QUEUEDIR/$*.sqf
+        qfile=$QUEUEDIR/${*:-potential_updates}.sqf
         qfile=${qfile// /+}
     fi
-    exec >"$qfile" || die $? "Could not open queue file for writing."
+    exec >$qfile 3>&1 || die $? "Could not open queue file for writing."
     echo "Storing queue file in: $qfile" 1>&2
 fi
 
+if ((opt_check)); then
+    check_for_updates
+    if [[ -z $buildq ]]; then
+        ((! $#)) && die 1 "No updates in $REPO_NAME/$REPO_BRANCH."
+        echo 1>&3 "# No updates in $REPO_NAME/$REPO_BRANCH."
+    fi
+fi
 
 # --- main loop ---
 
@@ -248,9 +362,9 @@ elif ((opt_remove)); then
     echo '+ removepkg' $args
     read -r -p 'Really remove all these packages? ' reply
     if [[ $reply =~ $(locale yesexpr) ]]; then
-    	removepkg $args
+        removepkg $args
     else
-    	die 1 'Cancelled.'
+        die 1 'Cancelled.'
     fi
 else
     # output build queue
