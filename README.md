@@ -14,7 +14,9 @@ When you're trying to install something like SpamAssassin and its 41 multi-layer
 * Fast, on-the-fly dependency resolution. Unlike with `/usr/doc/sbopkg-0.37.0/contrib/sqg`, there is no need to store build queues in advance, although you can do.
 * Given no options, `sbodeps` simply outputs the build queue for the specified package(s) to the terminal. Use output redirection or the `-q` option to store it wherever you want. Use the `-Q` option to store it in `sbopkg`'s queues directory like `sqg` does, so you can use it with `sbopkg`'s dialog interface.
 * Unlike `sqg`, `sbodeps` skips dependencies that are already installed. Use the `-a` option to include them.
-* To install one or more packages and their dependencies, `sbodeps` does not need a stored build queue at all; instead, it will directly construct a command line for `sbopkg` that installs, in the correct order, the specified packages and all their dependencies that aren't already installed. (If `-a` is given, it will rebuild and reinstall even the already-installed ones.) Installing SpamAssassin and its 41 dependencies is as simple as saying `sbodeps -i spamassassin`.
+* To install or update packages and their dependencies, `sbodeps` does not need a stored build queue at all; instead, it will directly construct a command line for `sbopkg` that installs, in the correct order, the specified packages and all their dependencies that aren't already installed. (If `-a` is given, it will rebuild and reinstall even the already-installed ones.) Installing SpamAssassin and its 41 dependencies is as simple as saying `sbodeps -i spamassassin`.
+* *New in 1.1:* Fast update checker: `sbodeps -c` is roughly 100 times as fast as `sbopkg -c`. Not only that, it will automatically add any new dependencies to the update queue. Installing all available updates (plus any new dependencies) is as simple as saying `sbodeps -ci`.
+* *New in 1.1:* By default, non-SBo packages are not considered in dependency resolution or update checking, so that any non-SBo dependencies are replaced by SBo versions by default (to ensure compatibility), and any installed non-SBo packages are not considered by the update check. Adding the new `-n` option will cause `sbodeps` to consider installed non-SBo packages during dependency resolution or update checking.
 * To remove a package and its installed slackbuilds.org dependencies, use the `-r` option. Caution is advised; `sbodeps` will build and show a `removepkg` command and ask for confirmation before executing it.
 * Shows a pointer to the package's README file if it has optional dependencies (meaning, if there is a `%README%` tag in the .info file).
 * Does not require root just to show or store a build queue.
@@ -37,6 +39,8 @@ As part of its strategy to achieve high performance, `sbodeps` directly sources 
                         store build queue in FILE
       -i, --install     instead of storing build queue, install packages now
       -r, --remove      remove a package and its dependencies (be careful!)
+      -c, --check       add potential updates (and any new deps) to build queue
+      -n, --nonrepo     consider non-SBo installed packages in dep.res./updates
       -v, --version     show version number  
       -h, --help        show this help
       -L, --licen[sc]e  show license
