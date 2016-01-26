@@ -23,6 +23,12 @@
 # --- end license ---
 #
 # Version history:
+# 2016-01-23: 1.2:
+# - Now deals correctly with SBo-git/current and other custom repos
+# - Rewrite is_installed(): it returned false positives
+# - Option -r/--sync runs 'sbopkg -r'; this is for conveniently combining
+#   it with other options, such as 'sbodeps -rci' (sync, check, install).
+#   Note: -r is no longer short for --remove.
 # 2016-01-12: 1.1:
 # - new '-c'/'--check' option, much faster than 'sbopkg -c'
 # - by default, don't consider installed non-repo packages in dep resolution
@@ -43,7 +49,7 @@
 # - error if no packages given
 # 2014-03-21: 0.2: initial release.
 
-version='1.1 [12 Jan 2016]'
+version='1.2 [26 Jan 2016]'
 
 
 # --- utility functions ---
@@ -78,26 +84,26 @@ function appears_in {
 # installed, unsuccessfully if not.  If opt_nonrepo is non-zero, test for
 # any build at all. Depends on slash-separated variable $installed_packages.
 #
-# As a speed optimzation, store all the installed packages in a variable on
-# first use, instead doing repeated globbing on /var/log/packages.
-installed_packages=''
+# As a speed optimization, set a variable for each installed package and
+# check if the specified package's variable is set instead of doing repeated
+# globbing on /var/log/packages.
 function is_installed {
-    case $opt_nonrepo,${installed_packages:-doinit} in
-    ( 0,*/"$1"-*-*-[0-9]_"$REPO_NAME"/* )
-        ;;
-    ( 1,*/"$1"-*-*-[0-9]*/* )
-        ;;
-    ( ?,doinit )
-        # init on first use
-        local arg=$1 IFS=/  # set IFS for "$*"
-        set -- /var/log/packages/*-*-*-[0-9]*
-        installed_packages=/${*//'/var/log/packages/'/}/
-        is_installed "$arg" ;;
-    ( * )
-        false ;;
-    esac
+    init_is_installed
+    is_installed "$@"
 }
-
+function init_is_installed {
+    local tag
+    ((opt_nonrepo)) && tag=* || tag=$TAG
+    eval $(printf '%s\n' /var/log/packages/*-*-*-[0-9]$tag \
+        | sed 's|^/var/log/packages/|isinst_|
+               s/-[^-][^-]*-[^-][^-]*-[0-9][^-]*$//
+               s/[^A-Za-z0-9_]/_/g
+               s/$/=y/')
+    function is_installed {
+        local v=isinst_${1//[!A-Za-z0-9_]/_}
+        [[ -n ${!v+s} ]]
+    }
+}
 
 # --- UI functions ---
 
@@ -116,9 +122,10 @@ Options:
   -q FILE, --qfile=FILE, --queuefile=FILE
                     store build queue in FILE
   -i, --install     instead of storing build queue, install packages now
-  -r, --remove      remove a package and its dependencies (be careful!)
+      --remove      remove a package and its dependencies (be careful!)
   -c, --check       add potential updates (and any new deps) to build queue
   -n, --nonrepo     consider non-$REPO_NAME installed packages in dep.res./updates
+  -r, --sync        sync the repo (run 'sbopkg -r') before doing anything else
   -v, --version     show version number
   -h, --help        show this help
   -L, --licen[sc]e  show license
@@ -184,17 +191,14 @@ function resolve_deps {
 # Check against the repo for updates of installed SBo packages, adding potential
 # updates (and any non-installed dependencies) to the build queue.
 function check_for_updates {
-    local pkgfile scriptline \
+    local tag pkgfile scriptline \
           curprgnam curversion curarch curbuild curtag \
           PRGNAM VERSION BUILD
 
-    if ((opt_nonrepo)); then
-        set -- /var/log/packages/*
-    else
-        set -- /var/log/packages/*_"$REPO_NAME"
-        # unresolved glob: there are no SBo packages at all
-        [[ $#,$1 == "1,/var/log/packages/*_$REPO_NAME" ]] && return
-    fi
+    ((opt_nonrepo)) && tag=* || tag=$TAG
+    set -- /var/log/packages/*-*-*-[0-9]$tag
+    # unresolved glob: there are no matching packages at all
+    [[ $#,$1 == "1,/var/log/packages/*-*-*-[0-9]$tag" ]] && return
 
     for pkgfile do
 
@@ -235,12 +239,12 @@ function check_for_updates {
             die 3 "$REPO_NAME repository corrupted!"
         fi
 
-        if [[ $curversion == "$VERSION" && $curbuild$curtag == "${BUILD}_$REPO_NAME" ]]; then
+        if [[ $curversion == "$VERSION" && $curbuild$curtag == "$BUILD$TAG" ]]; then
             continue
         fi
 
         printf 1>&3 '# Available: %s %s (build %s) <> %s (build %s)\n' \
-            "$PRGNAM" "$curversion" "$curbuild$curtag" "$VERSION" "${BUILD}_$REPO_NAME"
+            "$PRGNAM" "$curversion" "$curbuild$curtag" "$VERSION" "$BUILD$TAG"
 
         resolve_deps "$PRGNAM"  # in case there are new dependencies
 
@@ -264,13 +268,34 @@ fi
 
 # for function resolve_deps
 repobase=$REPO_ROOT/$REPO_NAME/$REPO_BRANCH
+if ! [ -d "$repobase" ]; then
+	# SBo-git/current doesn't use repro-branch subdirectory
+	repobase=$REPO_ROOT/$REPO_NAME
+	if ! [ -d "$repobase" ]; then
+		die 3 "Repository $REPO_NAME not found in $REPO_ROOT"
+	fi
+fi
 buildq=''
 
+# for functions is_installed and check_for_updates: find the package tag
+# (e.g. '_SBo') which is usually identical to "_${REPO_BRANCH}" but is
+# different in SBo-git/currrent
+TAG=$(cat /etc/sbopkg/repos.d/[0-9][0-9]-*.repo | while read -r line; do
+	[[ $line == \#* ]] && continue
+	eval "set -- $line"  # these conveniently use shell quoting for fields
+	if [[ $1 == "$REPO_NAME" && $2 == "$REPO_BRANCH" ]]; then
+		echo "$4"
+		break
+	fi
+done)
+if [[ -z $TAG ]]; then
+	die 3 "Repository branch $REPO_NAME/$REPO_BRANCH not found in /etc/sbopkg/repos.d"
+fi
 
 # --- parse options ---
 
-opt_all=0 opt_install=0 opt_remove=0 opt_q=0 qfile='' opt_check=0 opt_nonrepo=0
-while getopts 'airq:QcnvhL-:' opt; do
+opt_all=0 opt_install=0 opt_remove=0 opt_q=0 qfile='' opt_check=0 opt_nonrepo=0 opt_sync=0
+while getopts 'aiq:QcnrvhL-:' opt; do
     if [[ $opt == '-' ]]; then
         # support long options in forms --option and --option=argument
         opt=-${OPTARG%%=*}
@@ -281,7 +306,7 @@ while getopts 'airq:QcnvhL-:' opt; do
         opt_all=1 ;;
     ( i | -install )
         opt_install=1 ;;
-    ( r | -remove )
+    ( -remove )
         opt_remove=1 ;;
     ( q | -qfile | -queuefile )
         [[ -n $OPTARG ]] || die -u 2 "-$opt: option requires an argument"
@@ -292,6 +317,8 @@ while getopts 'airq:QcnvhL-:' opt; do
         opt_check=1 ;;
     ( n | -nonrepo )
         opt_nonrepo=1 ;;
+    ( r | -sync)
+    	opt_sync=1 ;;
     ( v | -version )
         showversion; exit ;;
     ( h | -help )
@@ -308,16 +335,19 @@ while getopts 'airq:QcnvhL-:' opt; do
 done
 shift $((OPTIND-1))
 
-
 # --- check options ---
 
-if ((! $# && ! opt_check)); then
-    die -u 2 'No package name or -c given.'
+if ((! $# && ! opt_check && ! opt_sync)); then
+    die -u 2 'No package name, -c or -r given.'
 fi
 
 if ((opt_install + opt_remove + opt_q > 1 || opt_check + opt_remove > 1))
 then
     die -u 2 'Contradictory options specified.'
+fi
+
+if ((opt_sync)); then
+    sbopkg -r || die $? "sbopkg -r failed"
 fi
 
 # redirect standard output (1) and comments (3) to queue file if requested
